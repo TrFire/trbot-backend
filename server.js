@@ -15,6 +15,12 @@ app.use(cors({ origin: '*' }));
 
 let sock = null;
 
+// ROTA DE SAÚDE (Para o Render e UptimeRobot saberem que está online)
+// Isto resolve os avisos do Render e mantém o servidor acordado
+app.get('/', (req, res) => {
+    res.send('🤖 Servidor TRBot IA está Online e a funcionar de forma saudável!');
+});
+
 // ROTA PARA GERAR O CÓDIGO DE APARELHO (Pairing Code)
 app.post('/api/pair-code', async (req, res) => {
     const phoneNumber = req.body.phone;
