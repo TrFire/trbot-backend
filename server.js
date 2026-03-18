@@ -26,11 +26,23 @@ app.post('/api/pair-code', async (req, res) => {
     try {
         const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
 
-        // CORREÇÃO: Limpar a sessão corrompida anterior antes de pedir um novo código.
-        // Isto evita o erro 428 (Precondition Required / Connection Closed).
+        // CORREÇÃO 1: Encerrar completamente qualquer ligação fantasma anterior.
+        // Se houver múltiplas ligações ativas, a Meta rejeita o código no telemóvel.
+        if (sock) {
+            console.log('A encerrar a ligação fantasma anterior...');
+            try {
+                sock.ev.removeAllListeners();
+                sock.ws.close();
+            } catch (e) {
+                console.log('Erro ao fechar o socket anterior (ignorado).');
+            }
+            sock = null;
+        }
+
+        // CORREÇÃO 2: Limpar a sessão corrompida anterior antes de pedir um novo código.
         if (fs.existsSync('auth_info_baileys')) {
             fs.rmSync('auth_info_baileys', { recursive: true, force: true });
-            console.log('Sessão anterior limpa. A iniciar uma nova ligação fresca...');
+            console.log('Sessão anterior apagada do disco. A iniciar uma ligação fresca...');
         }
 
         const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
@@ -39,8 +51,11 @@ app.post('/api/pair-code', async (req, res) => {
             auth: state,
             printQRInTerminal: false,
             logger: pino({ level: "silent" }),
-            // CORREÇÃO: Usar um identificador de navegador padrão (Ubuntu/Chrome) evita bloqueios da Meta
-            browser: ["Ubuntu", "Chrome", "20.0.04"], 
+            // CORREÇÃO 3: Usar uma assinatura de browser mais padronizada (Mac OS)
+            browser: ["Mac OS", "Chrome", "109.0.5414.120"], 
+            // Aumentar os limites de tempo ajuda a evitar que o Render perca a ligação
+            connectTimeoutMs: 60000,
+            keepAliveIntervalMs: 10000,
         });
 
         sock.ev.on('creds.update', saveCreds);
@@ -59,6 +74,13 @@ app.post('/api/pair-code', async (req, res) => {
         // Aguarda 3 segundos para o WebSocket estabilizar antes de pedir o código
         setTimeout(async () => {
             try {
+                // Prevenção extra: Não pedir código se a sessão já estiver válida
+                if (sock.authState.creds.registered) {
+                    return res.status(400).json({ error: 'O dispositivo já está associado.' });
+                }
+
+                console.log(`A solicitar código de emparelhamento para o número: ${cleanNumber}`);
+                
                 // Solicita o código real ao WhatsApp
                 const code = await sock.requestPairingCode(cleanNumber);
                 
@@ -67,17 +89,23 @@ app.post('/api/pair-code', async (req, res) => {
                 
                 console.log(`Sucesso! Código gerado para ${cleanNumber}: ${formattedCode}`);
                 
-                // Devolve o código real ao nosso PWA
-                res.json({ code: formattedCode });
+                // Devolve o código real ao nosso PWA apenas se a resposta ainda não tiver sido enviada
+                if (!res.headersSent) {
+                    res.json({ code: formattedCode });
+                }
             } catch (err) {
                 console.error("Erro ao pedir código à Meta:", err);
-                res.status(500).json({ error: 'Erro ao gerar código na Meta. Tente novamente.' });
+                if (!res.headersSent) {
+                    res.status(500).json({ error: 'A Meta rejeitou o pedido. Verifique o número e tente novamente.' });
+                }
             }
         }, 3000); 
 
     } catch (error) {
         console.error("Erro geral no servidor:", error);
-        res.status(500).json({ error: 'Falha interna no servidor.' });
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Falha interna no servidor.' });
+        }
     }
 });
 
