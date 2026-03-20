@@ -14,7 +14,7 @@ let currentQR = null;
 let isConnected = false;
 
 app.get('/', (req, res) => {
-    res.send('🤖 Servidor TRBot IA está Online (Otimizado para conexões rápidas)!');
+    res.send('🤖 Servidor TRBot IA está Online (Modo Ultra-Leve)!');
 });
 
 async function startWhatsApp(phoneNumber = null, res = null) {
@@ -23,6 +23,7 @@ async function startWhatsApp(phoneNumber = null, res = null) {
         sock = null;
     }
 
+    // Apaga completamente qualquer vestígio de sessão anterior
     if (fs.existsSync('auth_info_baileys')) {
         fs.rmSync('auth_info_baileys', { recursive: true, force: true });
     }
@@ -31,30 +32,29 @@ async function startWhatsApp(phoneNumber = null, res = null) {
     isConnected = false;
 
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-    const { version, isLatest } = await fetchLatestBaileysVersion();
+    const { version } = await fetchLatestBaileysVersion();
     
     sock = makeWASocket({
         version,
         auth: state,
         printQRInTerminal: false,
-        logger: pino({ level: "silent" }),
-        browser: ["Windows", "Chrome", "110.0.5481.192"], // Assinatura leve de Windows
+        logger: pino({ level: "silent" }), 
+        browser: Browsers.macOS('Desktop'), // Assinatura oficial para evitar bloqueios
         
-        // --- AS TRÊS LINHAS MÁGICAS QUE RESOLVEM O TRAVAMENTO ---
-        syncFullHistory: false, 
+        // --- CONFIGURAÇÕES ULTRA-LEVES PARA O RENDER ---
+        syncFullHistory: false, // Proíbe o download de histórico
+        markOnlineOnConnect: false, // Não avisa que está online (poupa processamento inicial)
         generateHighQualityLinkPreview: false,
-        markOnlineOnConnect: true,
-        // --------------------------------------------------------
-        
-        connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: 0,
-        keepAliveIntervalMs: 10000,
+        // O getMessage vazio previne que o servidor trave a tentar ler mensagens antigas durante o emparelhamento
+        getMessage: async (key) => {
+            return { conversation: 'Mensagem de inicialização' };
+        }
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
+        const { connection, qr } = update;
         
         if (qr) {
             try { currentQR = await QRCode.toDataURL(qr); } catch (err) {}
@@ -66,27 +66,22 @@ async function startWhatsApp(phoneNumber = null, res = null) {
         } else if (connection === 'open') {
             isConnected = true;
             currentQR = null;
-            console.log('✅ WhatsApp conectado com sucesso e sem travamentos!');
+            console.log('✅ Conexão estabelecida com sucesso e sem travamentos!');
         }
     });
 
     if (phoneNumber) {
         setTimeout(async () => {
             try {
-                if (sock.authState.creds.registered) {
-                    if (res && !res.headersSent) return res.status(400).json({ error: 'Dispositivo já associado.' });
-                    return;
-                }
-                
                 const code = await sock.requestPairingCode(phoneNumber);
                 const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
                 if (res && !res.headersSent) res.json({ code: formattedCode });
             } catch (err) {
-                if (res && !res.headersSent) res.status(500).json({ error: 'Erro ao gerar código.' });
+                if (res && !res.headersSent) res.status(500).json({ error: 'Erro ao pedir código à Meta.' });
             }
         }, 3000); 
     } else {
-        if (res && !res.headersSent) res.json({ message: 'A iniciar gerador de QR Code...' });
+        if (res && !res.headersSent) res.json({ message: 'A iniciar gerador de QR...' });
     }
 }
 
@@ -103,7 +98,7 @@ app.post('/api/start-qr', async (req, res) => {
 
 app.get('/api/qr', (req, res) => {
     if (currentQR) res.json({ qr: currentQR });
-    else res.status(404).json({ error: 'A aguardar QR Code...' });
+    else res.status(404).json({ error: 'A aguardar...' });
 });
 
 app.get('/api/status', (req, res) => {
