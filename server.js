@@ -14,19 +14,23 @@ let currentQR = null;
 let isConnected = false;
 
 app.get('/', (req, res) => {
-    res.send('🤖 Servidor TRBot IA está Online (Versão Estável)!');
+    res.send('🤖 Servidor TRBot IA está Online (Versão Definitiva de Conexão)!');
 });
 
 async function startWhatsApp(phoneNumber = null, res = null) {
-    // 1. Limpa ligações antigas da memória
+    // 1. Limpeza agressiva e segura de tentativas anteriores
     if (sock) {
         try { sock.ev.removeAllListeners(); sock.ws.close(); } catch (e) {}
         sock = null;
     }
 
-    // 2. Apaga ficheiros de sessão corrompidos
-    if (fs.existsSync('auth_info_baileys')) {
-        fs.rmSync('auth_info_baileys', { recursive: true, force: true });
+    try {
+        if (fs.existsSync('auth_info_baileys')) {
+            fs.rmSync('auth_info_baileys', { recursive: true, force: true });
+            console.log('Sessão limpa.');
+        }
+    } catch (e) {
+        console.error('Erro ao limpar pasta de sessão:', e);
     }
 
     currentQR = null;
@@ -34,15 +38,15 @@ async function startWhatsApp(phoneNumber = null, res = null) {
 
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     
-    // 3. Inicia a ligação de forma segura e estável
+    // 2. Iniciar a ligação
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: "silent" }),
-        // Assinatura de navegador simples e compatível
-        browser: ["Windows", "Chrome", "110.0.5481.192"],
-        // Evita o travamento na tela "Conectando..." do telemóvel
-        markOnlineOnConnect: false, 
+        browser: ["Ubuntu", "Chrome", "20.0.04"], // A melhor assinatura para evitar bloqueios da Meta
+        markOnlineOnConnect: false, // Previne o telemóvel de travar no "Conectando..."
+        generateHighQualityLinkPreview: false,
+        syncFullHistory: false // Mantém a memória do Render leve
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -50,14 +54,16 @@ async function startWhatsApp(phoneNumber = null, res = null) {
     sock.ev.on('connection.update', async (update) => {
         const { connection, qr, lastDisconnect } = update;
         
-        if (qr) {
+        // 3. SEGREDO: Só gera QR Code se o utilizador NÃO tiver pedido código numérico!
+        if (qr && !phoneNumber) { 
+            console.log('A receber QR Code da Meta...');
             try { currentQR = await QRCode.toDataURL(qr); } catch (err) {}
         }
 
         if (connection === 'close') {
             isConnected = false;
             currentQR = null;
-            console.log('Ligação fechada. Aguardando nova tentativa...');
+            console.log('Ligação fechada. Motivo:', lastDisconnect?.error?.output?.statusCode);
         } else if (connection === 'open') {
             isConnected = true;
             currentQR = null;
@@ -65,24 +71,27 @@ async function startWhatsApp(phoneNumber = null, res = null) {
         }
     });
 
-    // 4. Gera o código de emparelhamento se o número for fornecido
+    // 4. Se o utilizador pediu Código Numérico
     if (phoneNumber) {
         setTimeout(async () => {
             try {
                 const code = await sock.requestPairingCode(phoneNumber);
                 const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
+                console.log(`Código Numérico gerado: ${formattedCode}`);
                 if (res && !res.headersSent) res.json({ code: formattedCode });
             } catch (err) {
-                console.error(err);
-                if (res && !res.headersSent) res.status(500).json({ error: 'Erro ao pedir código à Meta. Tente com ou sem o 9.' });
+                console.error('Erro ao gerar código:', err);
+                if (res && !res.headersSent) res.status(500).json({ error: 'Erro. Tente colocar ou retirar o 9º dígito do seu número.' });
             }
-        }, 3000); 
-    } else {
-        if (res && !res.headersSent) res.json({ message: 'A iniciar gerador de QR...' });
+        }, 2500); 
+    } 
+    // Se o utilizador pediu QR Code
+    else {
+        if (res && !res.headersSent) res.json({ message: 'A aguardar QR Code da Meta...' });
     }
 }
 
-// --- ROTAS ---
+// --- ROTAS DA API ---
 app.post('/api/pair-code', async (req, res) => {
     const phoneNumber = req.body.phone;
     if (!phoneNumber) return res.status(400).json({ error: 'Número obrigatório.' });
