@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
 const QRCode = require('qrcode');
@@ -14,84 +14,78 @@ let currentQR = null;
 let isConnected = false;
 
 app.get('/', (req, res) => {
-    res.send('🤖 Servidor TRBot IA está Online (Versão Definitiva de Conexão)!');
+    res.send('🤖 Servidor TRBot IA está Online (Versão Estável e Anti-Travamento)!');
 });
 
 async function startWhatsApp(phoneNumber = null, res = null) {
-    // 1. Limpeza agressiva e segura de tentativas anteriores
+    // 1. Limpeza profunda para evitar o erro "Não foi possível conectar"
     if (sock) {
         try { sock.ev.removeAllListeners(); sock.ws.close(); } catch (e) {}
         sock = null;
     }
 
-    try {
-        if (fs.existsSync('auth_info_baileys')) {
-            fs.rmSync('auth_info_baileys', { recursive: true, force: true });
-            console.log('Sessão limpa.');
-        }
-    } catch (e) {
-        console.error('Erro ao limpar pasta de sessão:', e);
+    if (fs.existsSync('auth_info_baileys')) {
+        fs.rmSync('auth_info_baileys', { recursive: true, force: true });
     }
 
     currentQR = null;
     isConnected = false;
 
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    const { version } = await fetchLatestBaileysVersion();
     
-    // 2. Iniciar a ligação
+    // 2. A configuração que o fez chegar ao "Conectando", agora blindada
     sock = makeWASocket({
+        version,
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: "silent" }),
-        browser: ["Ubuntu", "Chrome", "20.0.04"], // A melhor assinatura para evitar bloqueios da Meta
-        markOnlineOnConnect: false, // Previne o telemóvel de travar no "Conectando..."
+        browser: ["Windows", "Chrome", "120.0.0.0"], // Assinatura comprovada
+        
+        // 3. O SEGREDO PARA NÃO TRAVAR:
+        syncFullHistory: false, 
+        markOnlineOnConnect: false,
         generateHighQualityLinkPreview: false,
-        syncFullHistory: false // Mantém a memória do Render leve
+        // Esta linha impede que o servidor trave a tentar processar o seu histórico antigo
+        getMessage: async () => { return { conversation: 'TRBot Inicialização' }; } 
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, qr, lastDisconnect } = update;
+        const { connection, qr } = update;
         
-        // 3. SEGREDO: Só gera QR Code se o utilizador NÃO tiver pedido código numérico!
-        if (qr && !phoneNumber) { 
-            console.log('A receber QR Code da Meta...');
+        if (qr && !phoneNumber) {
             try { currentQR = await QRCode.toDataURL(qr); } catch (err) {}
         }
 
         if (connection === 'close') {
             isConnected = false;
             currentQR = null;
-            console.log('Ligação fechada. Motivo:', lastDisconnect?.error?.output?.statusCode);
+            console.log('Ligação fechada.');
         } else if (connection === 'open') {
             isConnected = true;
             currentQR = null;
-            console.log('✅ Conexão estabelecida com sucesso!');
+            console.log('✅ WhatsApp conectado com sucesso e sem travamentos!');
         }
     });
 
-    // 4. Se o utilizador pediu Código Numérico
     if (phoneNumber) {
         setTimeout(async () => {
             try {
                 const code = await sock.requestPairingCode(phoneNumber);
                 const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
-                console.log(`Código Numérico gerado: ${formattedCode}`);
                 if (res && !res.headersSent) res.json({ code: formattedCode });
             } catch (err) {
-                console.error('Erro ao gerar código:', err);
-                if (res && !res.headersSent) res.status(500).json({ error: 'Erro. Tente colocar ou retirar o 9º dígito do seu número.' });
+                console.error('Erro ao pedir código:', err);
+                if (res && !res.headersSent) res.status(500).json({ error: 'Erro. Tente retirar ou colocar o 9º dígito.' });
             }
-        }, 2500); 
-    } 
-    // Se o utilizador pediu QR Code
-    else {
-        if (res && !res.headersSent) res.json({ message: 'A aguardar QR Code da Meta...' });
+        }, 3000); 
+    } else {
+        if (res && !res.headersSent) res.json({ message: 'A preparar QR...' });
     }
 }
 
-// --- ROTAS DA API ---
 app.post('/api/pair-code', async (req, res) => {
     const phoneNumber = req.body.phone;
     if (!phoneNumber) return res.status(400).json({ error: 'Número obrigatório.' });
