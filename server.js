@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
 const QRCode = require('qrcode');
@@ -14,16 +14,17 @@ let currentQR = null;
 let isConnected = false;
 
 app.get('/', (req, res) => {
-    res.send('🤖 Servidor TRBot IA está Online (Modo Ultra-Leve)!');
+    res.send('🤖 Servidor TRBot IA está Online (Versão Estável)!');
 });
 
 async function startWhatsApp(phoneNumber = null, res = null) {
+    // 1. Limpa ligações antigas da memória
     if (sock) {
         try { sock.ev.removeAllListeners(); sock.ws.close(); } catch (e) {}
         sock = null;
     }
 
-    // Apaga completamente qualquer vestígio de sessão anterior
+    // 2. Apaga ficheiros de sessão corrompidos
     if (fs.existsSync('auth_info_baileys')) {
         fs.rmSync('auth_info_baileys', { recursive: true, force: true });
     }
@@ -32,29 +33,22 @@ async function startWhatsApp(phoneNumber = null, res = null) {
     isConnected = false;
 
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-    const { version } = await fetchLatestBaileysVersion();
     
+    // 3. Inicia a ligação de forma segura e estável
     sock = makeWASocket({
-        version,
         auth: state,
         printQRInTerminal: false,
-        logger: pino({ level: "silent" }), 
-        browser: Browsers.macOS('Desktop'), // Assinatura oficial para evitar bloqueios
-        
-        // --- CONFIGURAÇÕES ULTRA-LEVES PARA O RENDER ---
-        syncFullHistory: false, // Proíbe o download de histórico
-        markOnlineOnConnect: false, // Não avisa que está online (poupa processamento inicial)
-        generateHighQualityLinkPreview: false,
-        // O getMessage vazio previne que o servidor trave a tentar ler mensagens antigas durante o emparelhamento
-        getMessage: async (key) => {
-            return { conversation: 'Mensagem de inicialização' };
-        }
+        logger: pino({ level: "silent" }),
+        // Assinatura de navegador simples e compatível
+        browser: ["Windows", "Chrome", "110.0.5481.192"],
+        // Evita o travamento na tela "Conectando..." do telemóvel
+        markOnlineOnConnect: false, 
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, qr } = update;
+        const { connection, qr, lastDisconnect } = update;
         
         if (qr) {
             try { currentQR = await QRCode.toDataURL(qr); } catch (err) {}
@@ -63,13 +57,15 @@ async function startWhatsApp(phoneNumber = null, res = null) {
         if (connection === 'close') {
             isConnected = false;
             currentQR = null;
+            console.log('Ligação fechada. Aguardando nova tentativa...');
         } else if (connection === 'open') {
             isConnected = true;
             currentQR = null;
-            console.log('✅ Conexão estabelecida com sucesso e sem travamentos!');
+            console.log('✅ Conexão estabelecida com sucesso!');
         }
     });
 
+    // 4. Gera o código de emparelhamento se o número for fornecido
     if (phoneNumber) {
         setTimeout(async () => {
             try {
@@ -77,7 +73,8 @@ async function startWhatsApp(phoneNumber = null, res = null) {
                 const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
                 if (res && !res.headersSent) res.json({ code: formattedCode });
             } catch (err) {
-                if (res && !res.headersSent) res.status(500).json({ error: 'Erro ao pedir código à Meta.' });
+                console.error(err);
+                if (res && !res.headersSent) res.status(500).json({ error: 'Erro ao pedir código à Meta. Tente com ou sem o 9.' });
             }
         }, 3000); 
     } else {
@@ -85,6 +82,7 @@ async function startWhatsApp(phoneNumber = null, res = null) {
     }
 }
 
+// --- ROTAS ---
 app.post('/api/pair-code', async (req, res) => {
     const phoneNumber = req.body.phone;
     if (!phoneNumber) return res.status(400).json({ error: 'Número obrigatório.' });
